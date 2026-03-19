@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sleep Architecture — D3.js</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+      padding: 40px 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    .phone-wrap {
+      background: #242435;
+      border-radius: 20px;
+      padding: 16px;
+      max-width: 360px;
+      width: 100%;
+    }
+
+    .phone-screen {
+      background: #0f1117;
+      border-radius: 24px;
+      overflow: hidden;
+      border: 1.5px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .status-bar {
+      display: flex;
+      justify-content: space-between;
+      padding: 12px 20px 4px;
+      font-size: 12px;
+      color: #6b7280;
+    }
+
+    .screen-title {
+      padding: 8px 20px 2px;
+      color: #f0f4ff;
+      font-size: 17px;
+      font-weight: 500;
+    }
+
+    .screen-sub {
+      padding: 2px 20px 12px;
+      color: #6b7280;
+      font-size: 12px;
+    }
+
+    .caption {
+      margin-top: 10px;
+      font-size: 11px;
+      color: #6b7280;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+<div class="phone-wrap">
+  <div class="phone-screen">
+    <div class="status-bar">
+      <span>9:41</span>
+      <span>●●● 100%</span>
+    </div>
+    <div class="screen-title">Sleep Architecture</div>
+    <div class="screen-sub">USER_00001 · Friday, Jan 6 2023</div>
+
+    <!-- D3 renders the SVG here -->
+    <div id="chart"></div>
+  </div>
+
+  <div class="caption">
+    D3.js · Real data · Gestalt: Enclosure · Bertin: Size (length = duration)
+  </div>
+</div>
+
+<script>
+(function () {
+
+  /* ── DATA ─────────────────────────────────────────────────── */
+  const stages = [
+    { label: "Deep",  hours: 1.32, color: "#1d4ed8", textColor: "#93c5fd", extra: "Best night of the week" },
+    { label: "REM",   hours: 1.78, color: "#6d28d9", textColor: "#c4b5fd", extra: "Memory consolidation"   },
+    { label: "Light", hours: 4.19, color: "#2563eb", textColor: "#bfdbfe", extra: "Weekly maximum total"   },
+    { label: "Awake", hours: 0.30, color: "#374151", textColor: "#9ca3af", extra: "Natural waking"         },
+  ];
+
+  const totalHours = d3.sum(stages, d => d.hours);
+
+  /* helper: decimal hours → "Xh Ym" */
+  function toHM(h) {
+    const hh = Math.floor(h);
+    const mm = Math.round((h - hh) * 60);
+    return hh > 0 ? `${hh}h ${mm}m` : `${mm}m`;
+  }
+
+  /* ── LAYOUT CONSTANTS ──────────────────────────────────────── */
+  const W       = 308;   // total SVG width
+  const pad     = 16;    // left/right padding
+  const barW    = W - pad * 2;
+  const barH    = 38;    // height of stacked bar
+  const dotR    = 5;     // legend dot radius
+  const cardH   = 68;    // height of each detail card
+  const barY    = 44;    // y-offset where bar starts (below header stats)
+  const legendH = 20;
+  const legendY = barY + barH + 16;
+  const cardsY  = legendY + legendH + 16;
+  const noteH   = 34;
+  const noteY   = cardsY + cardH * 2 + 8 + 14;
+  const svgH    = noteY + noteH + pad;
+
+  /* ── CREATE SVG ────────────────────────────────────────────── */
+  const svg = d3.select("#chart")
+    .append("svg")
+    .attr("width", W)
+    .attr("height", svgH)
+    .style("background", "#0f1117")
+    .style("display", "block");
+
+  /* ── 1. HEADER STATS ───────────────────────────────────────── */
+  const hg = svg.append("g").attr("transform", `translate(${pad}, 10)`);
+
+  hg.append("text")
+    .text("7h 18m")
+    .attr("x", 0).attr("y", 20)
+    .attr("fill", "#f0f4ff")
+    .attr("font-size", 22).attr("font-weight", 500);
+
+  hg.append("text")
+    .text("78.2%")
+    .attr("x", 102).attr("y", 20)
+    .attr("fill", "#4ade80")
+    .attr("font-size", 14).attr("font-weight", 500);
+
+  hg.append("text")
+    .text("sleep performance")
+    .attr("x", 152).attr("y", 20)
+    .attr("fill", "#6b7280")
+    .attr("font-size", 12);
+
+  /* ── 2. STACKED BAR ────────────────────────────────────────── */
+  /*
+   * Bertin — SIZE variable:
+   *   d3.scaleLinear maps total hours → barW pixels.
+   *   Each segment's pixel width is directly proportional to its duration.
+   *
+   * Gestalt — ENCLOSURE:
+   *   A single clipPath with rx=10 wraps all segments, so the eye reads
+   *   the whole bar as "one night" before decomposing it into stages.
+   */
+  const x = d3.scaleLinear()
+    .domain([0, totalHours])
+    .range([0, barW]);
+
+  const barG = svg.append("g")
+    .attr("transform", `translate(${pad}, ${barY})`);
+
+  /* clip path for uniform rounded corners on the composite bar */
+  barG.append("clipPath").attr("id", "barClip")
+    .append("rect")
+    .attr("width", barW).attr("height", barH)
+    .attr("rx", 10);
+
+  const bar = barG.append("g").attr("clip-path", "url(#barClip)");
+
+  let cx = 0;
+  stages.forEach((s, i) => {
+    const w = x(s.hours);
+
+    /* segment — animates from width 0 → full, staggered */
+    bar.append("rect")
+      .attr("x", cx).attr("y", 0)
+      .attr("width", 0).attr("height", barH)
+      .attr("fill", s.color)
+      .transition()
+        .duration(600)
+        .delay(i * 130)
+        .ease(d3.easeCubicOut)
+      .attr("width", w);
+
+    /* percentage label — only when segment is wide enough */
+    if (w > 36) {
+      bar.append("text")
+        .attr("x", cx + w / 2).attr("y", barH / 2)
+        .attr("text-anchor", "middle")
+        .attr("dominant-baseline", "central")
+        .attr("fill", s.textColor)
+        .attr("font-size", 11).attr("font-weight", 500)
+        .attr("opacity", 0)
+        .text(`${Math.round(s.hours / totalHours * 100)}%`)
+        .transition()
+          .duration(300)
+          .delay(i * 130 + 520)
+        .attr("opacity", 1);
+    }
+
+    cx += w;
+  });
+
+  /* ── 3. LEGEND ROW ─────────────────────────────────────────── */
+  const legG = svg.append("g")
+    .attr("transform", `translate(${pad}, ${legendY})`);
+
+  const colW = barW / stages.length;
+
+  stages.forEach((s, i) => {
+    const g = legG.append("g").attr("transform", `translate(${i * colW}, 0)`);
+
+    /* colored dot — same hue as bar segment (Gestalt: similarity) */
+    g.append("circle")
+      .attr("cx", dotR).attr("cy", dotR)
+      .attr("r", dotR)
+      .attr("fill", s.color);
+
+    g.append("text")
+      .attr("x", dotR * 2 + 5).attr("y", dotR + 1)
+      .attr("dominant-baseline", "central")
+      .attr("fill", "#9ca3af")
+      .attr("font-size", 11)
+      .text(s.label);
+  });
+
+  /* ── 4. DETAIL CARDS (2 × 2 grid) ─────────────────────────── */
+  const cardData = [
+    { label: "Deep",       val: toHM(stages[0].hours), color: stages[0].color, textColor: stages[0].textColor, extra: stages[0].extra },
+    { label: "REM",        val: toHM(stages[1].hours), color: stages[1].color, textColor: stages[1].textColor, extra: stages[1].extra },
+    { label: "Total",      val: toHM(totalHours),      color: "#2563eb",       textColor: "#93c5fd",           extra: "Weekly maximum"  },
+    { label: "Efficiency", val: "78.2%",               color: "#4ade80",       textColor: "#4ade80",           extra: "Room to improve" },
+  ];
+
+  const cColW = (barW - 8) / 2;
+  const cg = svg.append("g")
+    .attr("transform", `translate(${pad}, ${cardsY})`);
+
+  cardData.forEach((c, i) => {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const gx  = col * (cColW + 8);
+    const gy  = row * (cardH + 8);
+    const g   = cg.append("g").attr("transform", `translate(${gx}, ${gy})`);
+
+    /* card background */
+    g.append("rect")
+      .attr("width", cColW).attr("height", cardH)
+      .attr("rx", 10)
+      .attr("fill", "#1a1e2b");
+
+    /* left accent stripe — same color as stage (Gestalt: similarity) */
+    g.append("rect")
+      .attr("x", 0).attr("y", 0)
+      .attr("width", 3).attr("height", cardH)
+      .attr("rx", 1.5)
+      .attr("fill", c.color);
+
+    /* category label */
+    g.append("text")
+      .attr("x", 12).attr("y", 16)
+      .attr("fill", "#9aa0b5")
+      .attr("font-size", 9)
+      .attr("letter-spacing", "0.6")
+      .text(c.label.toUpperCase());
+
+    /* main value — fades in after bar animation */
+    g.append("text")
+      .attr("x", 12).attr("y", 39)
+      .attr("fill", c.textColor)
+      .attr("font-size", 20).attr("font-weight", 500)
+      .attr("opacity", 0)
+      .text(c.val)
+      .transition()
+        .duration(500)
+        .delay(i * 100 + 700)
+      .attr("opacity", 1);
+
+    /* subtitle */
+    g.append("text")
+      .attr("x", 12).attr("y", 56)
+      .attr("fill", "#6b7280")
+      .attr("font-size", 10)
+      .text(c.extra);
+  });
+
+  /* ── 5. CONTEXT NOTE ───────────────────────────────────────── */
+  const ng = svg.append("g").attr("transform", `translate(${pad}, ${noteY})`);
+
+  ng.append("rect")
+    .attr("width", barW).attr("height", noteH)
+    .attr("rx", 8)
+    .attr("fill", "#1a1e2b");
+
+  ng.append("text")
+    .attr("x", 10).attr("y", 13)
+    .attr("fill", "#6b7280")
+    .attr("font-size", 10)
+    .text("Post-run night: highest deep sleep of the week.");
+
+  ng.append("text")
+    .attr("x", 10).attr("y", 25)
+    .attr("fill", "#6b7280")
+    .attr("font-size", 10)
+    .text("Fatigue converted into quality recovery.");
+
+})();
+</script>
+
+</body>
+</html>
